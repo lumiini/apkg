@@ -1,0 +1,8 @@
+repos:
+    - https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64
+    - https://dl-cdn.alpinelinux.org/alpine/v3.22/community/x86_64
+packages: []
+install: true
+install_dir: test-root
+run_scripts: true
+resolve_deps: false
