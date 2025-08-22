@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -659,10 +660,51 @@ func uninstallPackage(pkgName, version, repo, installDir string) error {
 	if err != nil {
 		return fmt.Errorf("could not read installed files index: %w", err)
 	}
+	// Remove files
 	for _, rel := range files {
 		target := filepath.Join(installDir, rel)
 		if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
 			fmt.Fprintf(os.Stderr, "[WARN] Failed to remove %s: %v\n", target, err)
+		}
+	}
+	// Collect all parent directories
+	dirs := map[string]struct{}{}
+	for _, rel := range files {
+		dir := filepath.Dir(filepath.Join(installDir, rel))
+		if dir != installDir {
+			dirs[dir] = struct{}{}
+		}
+	}
+	// Get all files from other installed packages
+	otherFiles := map[string]struct{}{}
+	installedPkgs, _ := readInstalledPkgs("installed.yaml")
+	for otherPkg := range installedPkgs {
+		if otherPkg == pkgName {
+			continue
+		}
+		ofs, _ := readInstalledFiles(otherPkg)
+		for _, f := range ofs {
+			otherFiles[filepath.Join(installDir, f)] = struct{}{}
+		}
+	}
+	// Remove directories if empty and not used by other packages
+	// Sort dirs by descending length (deepest first)
+	dirList := []string{}
+	for d := range dirs {
+		dirList = append(dirList, d)
+	}
+	sort.Slice(dirList, func(i, j int) bool { return len(dirList[i]) > len(dirList[j]) })
+	for _, dir := range dirList {
+		used := false
+		for f := range otherFiles {
+			if strings.HasPrefix(f, dir+string(os.PathSeparator)) {
+				used = true
+				break
+			}
+		}
+		if !used {
+			// Only remove if empty
+			_ = os.Remove(dir)
 		}
 	}
 	os.Remove(filepath.Join("installed_files", pkgName+".yaml"))
