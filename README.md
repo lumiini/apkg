@@ -18,9 +18,10 @@ A *nicely-ish vibecoded* package manager that uses **apk** repos.
 
 ## Building
 
-1. Clone the repo  
-2. Install Go  
-3. Run:  
+1. Clone the repo
+2. CD into the directory
+3. Install Go  
+4. Run:  
 
 ```bash
 go build .
