@@ -3,7 +3,7 @@ name: Build and Release apkg
 on:
   push:
     tags:
-      - 'beta'
+      - '*'  # Trigger on any tag push
 
 jobs:
   build:
@@ -25,7 +25,7 @@ jobs:
         run: |
           tar -cJf apkg-release.tar.xz apkg apkg.yaml
 
-      - name: Upload Release Asset
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: apkg-release.tar.xz
