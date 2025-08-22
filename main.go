@@ -4,6 +4,8 @@
 
 /* Copyright (c) 2025 Lumiini */
 
+package main
+
 import (
 	"archive/tar"
 	"compress/gzip"
