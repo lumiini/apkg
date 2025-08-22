@@ -183,7 +183,38 @@ func main() {
 	flag.Parse()
 
 	args := flag.Args()
-	if len(args) > 0 && (args[0] == "add" || args[0] == "remove" || args[0] == "reinstall" || args[0] == "regen-indexes") {
+	if len(args) > 0 && (args[0] == "add" || args[0] == "remove" || args[0] == "reinstall" || args[0] == "regen-indexes" || args[0] == "list-installed" || args[0] == "help" || args[0] == "--help" || args[0] == "-h") {
+		if args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
+			fmt.Println(`apkg - worse Alpine package manager
+
+Usage:
+  apkg [flags]                # Install/upgrade/uninstall to match config
+  apkg add <pkg>              # Add a package to the config and install it
+  apkg remove|del <pkg>       # Remove a package from the config and uninstall it
+  apkg reinstall <pkg>        # Force reinstall a package
+  apkg regen-indexes          # Regenerate installed file indexes
+  apkg list-installed         # List installed packages and versions
+
+Flags:
+  -config <file>   Path to config file (default: apkg.yaml)
+  -dry-run         Show what would be done, but don't modify anything
+  -v               Enable verbose output
+  -h, --help       Show this help message
+`)
+			os.Exit(0)
+		}
+		if args[0] == "list-installed" {
+			installedPkgs, _ := readInstalledPkgs("installed.yaml")
+			if len(installedPkgs) == 0 {
+				fmt.Println("No packages installed.")
+			} else {
+				fmt.Println("Installed packages:")
+				for name, ver := range installedPkgs {
+					fmt.Printf("  %s %s\n", name, ver)
+				}
+			}
+			os.Exit(0)
+		}
 		var cfg *Config
 		cfg, err = readConfig(*configPath)
 		if err != nil {
