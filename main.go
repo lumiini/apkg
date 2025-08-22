@@ -180,6 +180,9 @@ func extractApk(apkPath, destDir string) error {
 	defer gz.Close()
 
 	tr := tar.NewReader(gz)
+	skipNames := []string{
+		".PKGINFO", ".post-install", ".post-upgrade", ".pre-deinstall", ".trigger",
+	}
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -188,7 +191,22 @@ func extractApk(apkPath, destDir string) error {
 		if err != nil {
 			return err
 		}
-		target := filepath.Join(destDir, hdr.Name)
+		name := hdr.Name
+		// Skip unwanted files
+		skip := false
+		for _, s := range skipNames {
+			if name == s || strings.HasPrefix(name, s+"/") {
+				skip = true
+				break
+			}
+		}
+		if strings.HasPrefix(name, ".SIGN.RSA-") {
+			skip = true
+		}
+		if skip {
+			continue
+		}
+		target := filepath.Join(destDir, name)
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(target, 0755); err != nil {
@@ -210,6 +228,12 @@ func extractApk(apkPath, destDir string) error {
 		}
 	}
 	return nil
+// installPackages is the actual install logic (currently disabled)
+// func installPackages(stagingDir string, pkgs []string) error {
+//     // TODO: Implement actual install logic (copy files, set permissions, run scripts, etc.)
+//     // This is intentionally left disabled for now.
+//     return nil
+// }
 }
 
 // downloadFile downloads a file from url and saves it to dest
