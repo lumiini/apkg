@@ -1,2 +1,6 @@
 apk-tools-master/
 test-root/
+apkg
+#installed_files/
+#installed.yaml
+#apkg.yaml
