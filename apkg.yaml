@@ -1,5 +1,5 @@
-# apkg.yaml
-repo: "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64"
-packages:
-  - busybox
-  - bash
+repo: https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64
+packages: []
+install: true
+install_dir: test-root
+run_scripts: false

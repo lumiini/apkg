@@ -3,20 +3,25 @@ package main
 import (
 	"archive/tar"
 	"compress/gzip"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"gopkg.in/yaml.v3"
 )
 
 // Config represents the structure of apkg.yaml
 type Config struct {
-	Repo     string   `yaml:"repo"`
-	Packages []string `yaml:"packages"`
+	Repo       string   `yaml:"repo"`
+	Packages   []string `yaml:"packages"`
+	Install    bool     `yaml:"install"`
+	InstallDir string   `yaml:"install_dir"`
+	RunScripts bool     `yaml:"run_scripts"`
 }
 
 // readConfig reads and parses apkg.yaml
@@ -121,47 +126,348 @@ func parseAPKIndex(r io.Reader) (map[string]APKPackage, error) {
 	return pkgs, nil
 }
 
-func main() {
-	cfg, err := readConfig("apkg.yaml")
+// InstalledPkg represents a record of an installed package and its version
+// Used for tracking and upgrade logic
+type InstalledPkg struct {
+	Name    string `yaml:"name"`
+	Version string `yaml:"version"`
+}
+
+// readInstalledPkgs reads the installed packages file (installed.yaml)
+func readInstalledPkgs(path string) (map[string]string, error) {
+	pkgs := make(map[string]string)
+	f, err := os.Open(path)
 	if err != nil {
-		fmt.Println("Failed to read config:", err)
-		return
+		if os.IsNotExist(err) {
+			return pkgs, nil // treat as empty
+		}
+		return nil, err
 	}
-	fmt.Println("Using repo:", cfg.Repo)
-	fmt.Println("Packages to install:", cfg.Packages)
+	defer f.Close()
+	var list []InstalledPkg
+	dec := yaml.NewDecoder(f)
+	if err := dec.Decode(&list); err != nil {
+		return nil, err
+	}
+	for _, p := range list {
+		pkgs[p.Name] = p.Version
+	}
+	return pkgs, nil
+}
+
+// writeInstalledPkgs writes the installed packages file (installed.yaml)
+func writeInstalledPkgs(path string, pkgs map[string]string) error {
+	list := make([]InstalledPkg, 0, len(pkgs))
+	for name, ver := range pkgs {
+		list = append(list, InstalledPkg{Name: name, Version: ver})
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	enc := yaml.NewEncoder(f)
+	return enc.Encode(list)
+}
+
+// globalConfig is used for script handling
+var globalConfig *Config
+
+func main() {
+	var err error
+	// CLI flags
+	configPath := flag.String("config", "apkg.yaml", "Path to config file")
+	dryRun := flag.Bool("dry-run", false, "Show what would be done, but don't modify anything")
+	verbose := flag.Bool("v", false, "Enable verbose output")
+	flag.Parse()
+
+	args := flag.Args()
+	if len(args) > 0 && (args[0] == "add" || args[0] == "remove" || args[0] == "reinstall" || args[0] == "regen-indexes") {
+		var cfg *Config
+		cfg, err = readConfig(*configPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[FATAL] Failed to read config: %v\n", err)
+			os.Exit(1)
+		}
+		if args[0] == "regen-indexes" {
+			installedPkgs, _ := readInstalledPkgs("installed.yaml")
+			cfgPkgs := make(map[string]bool)
+			for _, p := range cfg.Packages {
+				cfgPkgs[p] = true
+			}
+			updatedPkgs := make(map[string]string)
+			for pkg, ver := range installedPkgs {
+				if !cfgPkgs[pkg] {
+					fmt.Printf("Removing %s from installed.yaml (not in config)\n", pkg)
+					continue
+				}
+				fmt.Printf("Regenerating file index for %s (%s)...\n", pkg, ver)
+				apkFile := "staged/" + pkg + "-" + ver + ".apk"
+				apkURL := cfg.Repo
+				if !strings.HasSuffix(apkURL, "/") {
+					apkURL += "/"
+				}
+				apkURL += pkg + "-" + ver + ".apk"
+				fmt.Printf("[DEBUG] Downloading from: %s\n", apkURL)
+				err = downloadFile(apkURL, apkFile)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "[WARN] Failed to download %s: %v\n", pkg, err)
+					continue
+				}
+				tmpDir := "regen-staging-" + pkg
+				os.RemoveAll(tmpDir)
+				if err = extractApk(apkFile, tmpDir); err != nil {
+					fmt.Fprintf(os.Stderr, "[WARN] Failed to extract %s: %v\n", pkg, err)
+					os.Remove(apkFile)
+					continue
+				}
+				var files []string
+				_ = filepath.Walk(tmpDir, func(path string, info os.FileInfo, err error) error {
+					if err != nil {
+						return nil
+					}
+					rel, err := filepath.Rel(tmpDir, path)
+					if err != nil || rel == "." {
+						return nil
+					}
+					files = append(files, rel)
+					return nil
+				})
+				if err = writeInstalledFiles(pkg, files); err != nil {
+					fmt.Fprintf(os.Stderr, "[WARN] Failed to write index for %s: %v\n", pkg, err)
+				}
+				os.RemoveAll(tmpDir)
+				os.Remove(apkFile)
+				fmt.Printf("Regenerated index for %s (%d files)\n", pkg, len(files))
+				updatedPkgs[pkg] = ver
+			}
+			if err = writeInstalledPkgs("installed.yaml", updatedPkgs); err != nil {
+				fmt.Fprintf(os.Stderr, "[WARN] Failed to update installed.yaml: %v\n", err)
+			}
+			os.Exit(0)
+		}
+		if len(args) < 2 {
+			fmt.Fprintf(os.Stderr, "Usage: %s [flags] add|remove|reinstall <package>\n", os.Args[0])
+			os.Exit(1)
+		}
+		var err error
+		cfg, err = readConfig(*configPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[FATAL] Failed to read config: %v\n", err)
+			os.Exit(1)
+		}
+		pkg := args[1]
+		changed := false
+		if args[0] == "add" {
+			for _, p := range cfg.Packages {
+				if p == pkg {
+					fmt.Printf("%s is already in the package list.\n", pkg)
+					os.Exit(0)
+				}
+			}
+			cfg.Packages = append(cfg.Packages, pkg)
+			changed = true
+			fmt.Printf("Added %s to package list.\n", pkg)
+		} else if args[0] == "remove" {
+			newPkgs := []string{}
+			found := false
+			for _, p := range cfg.Packages {
+				if p == pkg {
+					found = true
+					continue
+				}
+				newPkgs = append(newPkgs, p)
+			}
+			if found {
+				cfg.Packages = newPkgs
+				changed = true
+				fmt.Printf("Removed %s from package list.\n", pkg)
+			} else {
+				fmt.Printf("%s was not in the package list.\n", pkg)
+			}
+		} else if args[0] == "reinstall" {
+			// Remove from installed.yaml and installed_files, but keep in config
+			fmt.Printf("Reinstalling %s...\n", pkg)
+			// Remove installed files if present
+			installedPkgs, _ := readInstalledPkgs("installed.yaml")
+			if ver, ok := installedPkgs[pkg]; ok {
+				if err := uninstallPackage(pkg, ver, cfg.Repo, cfg.InstallDir); err != nil {
+					fmt.Fprintf(os.Stderr, "[WARN] Failed to uninstall %s: %v\n", pkg, err)
+				} else {
+					fmt.Printf("Uninstalled %s (%s)\n", pkg, ver)
+				}
+			}
+			// Ensure it's in the config
+			found := false
+			for _, p := range cfg.Packages {
+				if p == pkg {
+					found = true
+					break
+				}
+			}
+			if !found {
+				cfg.Packages = append(cfg.Packages, pkg)
+				changed = true
+				fmt.Printf("Added %s to package list.\n", pkg)
+			}
+			changed = true // always reinstall
+		}
+		if changed {
+			f, err := os.Create(*configPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[FATAL] Failed to write config: %v\n", err)
+				os.Exit(1)
+			}
+			defer f.Close()
+			enc := yaml.NewEncoder(f)
+			if err := enc.Encode(cfg); err != nil {
+				fmt.Fprintf(os.Stderr, "[FATAL] Failed to encode config: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("Config updated. Applying changes...")
+			// Re-run main logic to apply install/uninstall, but drop subcommand args
+			newArgs := []string{os.Args[0]}
+			for _, a := range os.Args[1:] {
+				if a == "add" || a == "remove" || a == "reinstall" || a == "regen-indexes" {
+					break
+				}
+				newArgs = append(newArgs, a)
+			}
+			err = syscall.Exec(os.Args[0], newArgs, os.Environ())
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[FATAL] Failed to re-exec: %v\n", err)
+				os.Exit(1)
+			}
+		}
+		os.Exit(0)
+	}
+
+	cfg, err := readConfig(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[FATAL] Failed to read config: %v\n", err)
+		os.Exit(1)
+	}
+	globalConfig = cfg
+	if *verbose {
+		fmt.Println("Using repo:", cfg.Repo)
+		fmt.Println("Packages to install:", cfg.Packages)
+	}
 
 	// 1. Fetch and parse APKINDEX from parent dir
 	fmt.Println("Fetching APKINDEX...")
 	pkgMap, err := fetchAndParseAPKIndex(cfg.Repo)
 	if err != nil {
-		fmt.Println("Error fetching APKINDEX:", err)
-		return
+		fmt.Fprintf(os.Stderr, "[FATAL] Error fetching APKINDEX: %v\n", err)
+		os.Exit(2)
 	}
 
-	// 2. For each package, find in APKINDEX, download .apk from same dir, and stage
-	os.MkdirAll("staged", 0755)
-	os.MkdirAll("staging-2", 0755)
+	installedPkgsPath := "installed.yaml"
+	installedPkgs, _ := readInstalledPkgs(installedPkgsPath)
+	updatedPkgs := make(map[string]string)
+	for k, v := range installedPkgs {
+		updatedPkgs[k] = v
+	}
+	toInstall := []string{}
 	for _, pkg := range cfg.Packages {
 		info, ok := pkgMap[pkg]
 		if !ok {
-			fmt.Printf("Package not found in repo: %s\n", pkg)
+			continue
+		}
+		curVer, already := installedPkgs[pkg]
+		if already {
+			if curVer == info.Version {
+				fmt.Printf("%s (%s) is already installed. Skipping.\n", pkg, curVer)
+				continue
+			} else {
+				fmt.Printf("%s: upgrading from %s to %s\n", pkg, curVer, info.Version)
+			}
+		} else {
+			fmt.Printf("%s (%s) will be installed.\n", pkg, info.Version)
+		}
+		toInstall = append(toInstall, pkg)
+		updatedPkgs[pkg] = info.Version
+	}
+
+	// Only download and extract packages that need install/upgrade
+	if *dryRun {
+		fmt.Println("[DRY-RUN] The following packages would be downloaded and installed:")
+		for _, pkg := range toInstall {
+			info := pkgMap[pkg]
+			fmt.Printf("  %s (%s)\n", pkg, info.Version)
+		}
+		fmt.Println("[DRY-RUN] No changes made.")
+		return
+	}
+	if err := os.MkdirAll("staged", 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "[FATAL] Failed to create staged dir: %v\n", err)
+		os.Exit(3)
+	}
+	if err := os.MkdirAll("staging-2", 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "[FATAL] Failed to create staging-2 dir: %v\n", err)
+		os.Exit(3)
+	}
+	for _, pkg := range toInstall {
+		info, ok := pkgMap[pkg]
+		if !ok {
 			continue
 		}
 		apkURL := strings.TrimRight(cfg.Repo, "/") + "/" + info.Filename
 		stagedPath := "staged/" + info.Filename
 		fmt.Printf("Downloading %s (%s) from %s\n", info.Name, info.Version, apkURL)
 		if err := downloadFile(apkURL, stagedPath); err != nil {
-			fmt.Printf("Failed to download %s: %v\n", info.Name, err)
+			fmt.Fprintf(os.Stderr, "[ERROR] Failed to download %s: %v\n", info.Name, err)
 			continue
 		}
 		fmt.Printf("Staged: %s\n", stagedPath)
 
 		// Extract .apk (tar.gz) into staging-2
-		if err := extractApk(stagedPath, "staging-2"); err != nil {
-			fmt.Printf("Failed to extract %s: %v\n", info.Name, err)
+		if err := extractApk(stagedPath, "staging-2/"+pkg); err != nil {
+			fmt.Fprintf(os.Stderr, "[ERROR] Failed to extract %s: %v\n", info.Name, err)
 			continue
 		}
-		fmt.Printf("Extracted %s to staging-2/\n", info.Filename)
+		fmt.Printf("Extracted %s to staging-2/%s\n", info.Filename, pkg)
+	}
+
+	if cfg.Install {
+		if err := installPackages(toInstall, "staging-2", cfg.InstallDir); err != nil {
+			fmt.Fprintf(os.Stderr, "[FATAL] Install failed: %v\n", err)
+			os.Exit(4)
+		} else {
+			fmt.Printf("All packages installed to %s\n", cfg.InstallDir)
+			if err := writeInstalledPkgs(installedPkgsPath, updatedPkgs); err != nil {
+				fmt.Fprintf(os.Stderr, "[WARN] Failed to update installed.yaml: %v\n", err)
+			}
+			cleanupTempDirs()
+		}
+	} else {
+		fmt.Println("Install step skipped (install: false in config)")
+	}
+
+	// Uninstall packages that are no longer in the config
+	toUninstall := []string{}
+	for pkg := range installedPkgs {
+		found := false
+		for _, want := range cfg.Packages {
+			if pkg == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			toUninstall = append(toUninstall, pkg)
+		}
+	}
+	for _, pkg := range toUninstall {
+		ver := installedPkgs[pkg]
+		if err := uninstallPackage(pkg, ver, cfg.Repo, cfg.InstallDir); err != nil {
+			fmt.Fprintf(os.Stderr, "[ERROR] Failed to uninstall %s: %v\n", pkg, err)
+		} else {
+			fmt.Printf("Uninstalled %s (%s)\n", pkg, ver)
+			delete(updatedPkgs, pkg)
+			if err := writeInstalledPkgs(installedPkgsPath, updatedPkgs); err != nil {
+				fmt.Fprintf(os.Stderr, "[WARN] Failed to update installed.yaml after uninstall: %v\n", err)
+			}
+		}
 	}
 }
 
@@ -231,13 +537,95 @@ func extractApk(apkPath, destDir string) error {
 		}
 	}
 	return nil
-	// installPackages is the actual install logic (currently disabled)
-	//
-	//	func installPackages(stagingDir string, pkgs []string) error {
-	//	    // TODO: Implement actual install logic (copy files, set permissions, run scripts, etc.)
-	//	    // This is intentionally left disabled for now.
-	//	    return nil
-	//	}
+}
+
+// installPackages copies files from stagingDir/pkg to installDir for each package, preserving structure and permissions.
+func installPackages(pkgs []string, stagingDir, installDir string) error {
+	for _, pkg := range pkgs {
+		pkgStagingPath := filepath.Join(stagingDir, pkg)
+		var installedFiles []string
+		err := filepath.Walk(pkgStagingPath, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			relPath, err := filepath.Rel(pkgStagingPath, path)
+			if err != nil || relPath == "." {
+				return nil
+			}
+			targetPath := filepath.Join(installDir, relPath)
+			if info.IsDir() {
+				return os.MkdirAll(targetPath, info.Mode())
+			}
+			srcFile, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			defer srcFile.Close()
+			dstFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+			if err != nil {
+				return err
+			}
+			defer dstFile.Close()
+			_, err = io.Copy(dstFile, srcFile)
+			if err == nil {
+				installedFiles = append(installedFiles, relPath)
+			}
+			return err
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[ERROR] Failed to copy files for package %s: %v\n", pkg, err)
+			return fmt.Errorf("failed to install package %s: %w", pkg, err)
+		}
+		if err := writeInstalledFiles(pkg, installedFiles); err != nil {
+			fmt.Fprintf(os.Stderr, "[WARN] Failed to record installed files for %s: %v\n", pkg, err)
+		}
+		fmt.Printf("Installed package: %s to %s\n", pkg, installDir)
+
+		// Script handling: look for known scripts and run or log
+		scriptNames := []string{".post-install", ".pre-deinstall", ".post-upgrade"}
+		for _, script := range scriptNames {
+			scriptPath := filepath.Join(pkgStagingPath, script)
+			if _, err := os.Stat(scriptPath); err == nil {
+				if globalConfig != nil && globalConfig.RunScripts {
+					fmt.Printf("Would run script: %s\n", scriptPath)
+					// Here you would actually run the script if not in test-root
+				} else {
+					fmt.Fprintf(os.Stderr, "[WARN] Script present but not run (run_scripts: false): %s\n", scriptPath)
+				}
+			} else if !os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr, "[WARN] Error checking script %s: %v\n", scriptPath, err)
+			}
+		}
+	}
+	return nil
+}
+
+// writeInstalledFiles records the list of files installed for a package
+func writeInstalledFiles(pkgName string, files []string) error {
+	dir := "installed_files"
+	os.MkdirAll(dir, 0755)
+	f, err := os.Create(filepath.Join(dir, pkgName+".yaml"))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	enc := yaml.NewEncoder(f)
+	return enc.Encode(files)
+}
+
+// readInstalledFiles reads the list of files installed for a package
+func readInstalledFiles(pkgName string) ([]string, error) {
+	f, err := os.Open(filepath.Join("installed_files", pkgName+".yaml"))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var files []string
+	dec := yaml.NewDecoder(f)
+	if err := dec.Decode(&files); err != nil {
+		return nil, err
+	}
+	return files, nil
 }
 
 // downloadFile downloads a file from url and saves it to dest
@@ -256,4 +644,27 @@ func downloadFile(url, dest string) error {
 
 	_, err = io.Copy(f, resp.Body)
 	return err
+}
+
+// cleanupTempDirs removes temporary directories after install
+func cleanupTempDirs() {
+	os.RemoveAll("staged")
+	os.RemoveAll("staging-2")
+}
+
+// uninstallPackage removes files belonging to a package from installDir using the installed_files index
+func uninstallPackage(pkgName, version, repo, installDir string) error {
+	fmt.Printf("Uninstalling %s (%s)...\n", pkgName, version)
+	files, err := readInstalledFiles(pkgName)
+	if err != nil {
+		return fmt.Errorf("could not read installed files index: %w", err)
+	}
+	for _, rel := range files {
+		target := filepath.Join(installDir, rel)
+		if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "[WARN] Failed to remove %s: %v\n", target, err)
+		}
+	}
+	os.Remove(filepath.Join("installed_files", pkgName+".yaml"))
+	return nil
 }
