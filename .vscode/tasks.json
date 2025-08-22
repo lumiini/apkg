@@ -7,6 +7,11 @@
 			"command": "go run .",
 			"problemMatcher": [],
 			"group": "build"
+		},
+		{
+			"label": "Build apkg binary",
+			"type": "shell",
+			"command": "go build -o apkg ."
 		}
 	]
 }

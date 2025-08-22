@@ -18,7 +18,7 @@ import (
 
 // Config represents the structure of apkg.yaml
 type Config struct {
-	Repo        string   `yaml:"repo"`
+	Repos       []string `yaml:"repos"`
 	Packages    []string `yaml:"packages"`
 	Install     bool     `yaml:"install"`
 	InstallDir  string   `yaml:"install_dir"`
@@ -243,11 +243,18 @@ Flags:
 				}
 				fmt.Printf("Regenerating file index for %s (%s)...\n", pkg, ver)
 				apkFile := "staged/" + pkg + "-" + ver + ".apk"
-				apkURL := cfg.Repo
-				if !strings.HasSuffix(apkURL, "/") {
-					apkURL += "/"
+				// Find repo for this package
+				_, sourceRepo, err := fetchAndParseAllAPKIndexes(cfg.Repos)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "[WARN] Could not fetch APKINDEX for regen: %v\n", err)
+					continue
 				}
-				apkURL += pkg + "-" + ver + ".apk"
+				repo, ok := sourceRepo[pkg]
+				if !ok {
+					fmt.Fprintf(os.Stderr, "[WARN] Could not find repo for %s\n", pkg)
+					continue
+				}
+				apkURL := strings.TrimRight(repo, "/") + "/" + pkg + "-" + ver + ".apk"
 				fmt.Printf("[DEBUG] Downloading from: %s\n", apkURL)
 				err = downloadFile(apkURL, apkFile)
 				if err != nil {
@@ -331,7 +338,13 @@ Flags:
 			// Remove installed files if present
 			installedPkgs, _ := readInstalledPkgs("installed.yaml")
 			if ver, ok := installedPkgs[pkg]; ok {
-				if err := uninstallPackage(pkg, ver, cfg.Repo, cfg.InstallDir); err != nil {
+				// Find repo for this package
+				_, sourceRepo, err := fetchAndParseAllAPKIndexes(cfg.Repos)
+				repo := ""
+				if err == nil {
+					repo = sourceRepo[pkg]
+				}
+				if err := uninstallPackage(pkg, ver, repo, cfg.InstallDir); err != nil {
 					fmt.Fprintf(os.Stderr, "[WARN] Failed to uninstall %s: %v\n", pkg, err)
 				} else {
 					fmt.Printf("Uninstalled %s (%s)\n", pkg, ver)
@@ -389,13 +402,13 @@ Flags:
 	}
 	globalConfig = cfg
 	if *verbose {
-		fmt.Println("Using repo:", cfg.Repo)
+		fmt.Println("Using repos:", cfg.Repos)
 		fmt.Println("Packages to install:", cfg.Packages)
 	}
 
-	// 1. Fetch and parse APKINDEX from parent dir
-	fmt.Println("Fetching APKINDEX...")
-	pkgMap, err := fetchAndParseAPKIndex(cfg.Repo)
+	// 1. Fetch and parse APKINDEX from all repos
+	fmt.Println("Fetching APKINDEX from all repos...")
+	pkgMap, sourceRepo, err := fetchAndParseAllAPKIndexes(cfg.Repos)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[FATAL] Error fetching APKINDEX: %v\n", err)
 		os.Exit(2)
@@ -477,7 +490,12 @@ Flags:
 		if !ok {
 			continue
 		}
-		apkURL := strings.TrimRight(cfg.Repo, "/") + "/" + info.Filename
+		repo, ok := sourceRepo[pkg]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "[ERROR] No repo found for %s\n", pkg)
+			continue
+		}
+		apkURL := strings.TrimRight(repo, "/") + "/" + info.Filename
 		stagedPath := "staged/" + info.Filename
 		fmt.Printf("Downloading %s (%s) from %s\n", info.Name, info.Version, apkURL)
 		if err := downloadFile(apkURL, stagedPath); err != nil {
@@ -525,7 +543,11 @@ Flags:
 	}
 	for _, pkg := range toUninstall {
 		ver := installedPkgs[pkg]
-		if err := uninstallPackage(pkg, ver, cfg.Repo, cfg.InstallDir); err != nil {
+		repo := ""
+		if sourceRepo != nil {
+			repo = sourceRepo[pkg]
+		}
+		if err := uninstallPackage(pkg, ver, repo, cfg.InstallDir); err != nil {
 			fmt.Fprintf(os.Stderr, "[ERROR] Failed to uninstall %s: %v\n", pkg, err)
 		} else {
 			fmt.Printf("Uninstalled %s (%s)\n", pkg, ver)
@@ -774,4 +796,27 @@ func uninstallPackage(pkgName, version, repo, installDir string) error {
 	}
 	os.Remove(filepath.Join("installed_files", pkgName+".yaml"))
 	return nil
+}
+
+// fetchAndParseAllAPKIndexes fetches and merges APKINDEX from all repos
+func fetchAndParseAllAPKIndexes(repos []string) (map[string]APKPackage, map[string]string, error) {
+	pkgMap := make(map[string]APKPackage)
+	sourceRepo := make(map[string]string) // package name -> repo URL
+	for _, repo := range repos {
+		m, err := fetchAndParseAPKIndex(repo)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[WARN] Failed to fetch APKINDEX from %s: %v\n", repo, err)
+			continue
+		}
+		for name, pkg := range m {
+			if _, exists := pkgMap[name]; !exists {
+				pkgMap[name] = pkg
+				sourceRepo[name] = repo
+			}
+		}
+	}
+	if len(pkgMap) == 0 {
+		return nil, nil, fmt.Errorf("no packages found in any repo")
+	}
+	return pkgMap, sourceRepo, nil
 }

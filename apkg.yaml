@@ -1,6 +1,7 @@
-repo: https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64
-packages:
-    - apk-tools
+repos:
+    - https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64
+    - https://dl-cdn.alpinelinux.org/alpine/v3.20/community/x86_64
+packages: []
 install: true
 install_dir: test-root
 run_scripts: false
