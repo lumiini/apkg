@@ -24,9 +24,11 @@ A *nicely-ish vibecoded* package manager that uses **apk** repos.
 
 ```bash
 go build .
+```
 
 Or, for a statically linked binary (called apkg):
 
+```bash
 CGO_ENABLED=0 go build -ldflags="-s -w -extldflags '-static'" -o apkg
 ```
 ## Configuration
