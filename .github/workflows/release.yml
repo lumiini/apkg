@@ -1,24 +1,33 @@
-name: Release apkg binary
+name: Build and Release apkg
 
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - 'beta'
 
 jobs:
-  build-and-release:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
-      - name: Build
-        run: go build -o apkg .
-      - name: Create Release
+          go-version: '1.21'
+
+      - name: Build static apkg binary
+        run: |
+          CGO_ENABLED=0 go build -ldflags="-s -w -extldflags '-static'" -o apkg .
+
+      - name: Create release tarball
+        run: |
+          tar -cJf apkg-release.tar.xz apkg apkg.yaml
+
+      - name: Upload Release Asset
         uses: softprops/action-gh-release@v2
         with:
-          files: ./apkg
+          files: apkg-release.tar.xz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

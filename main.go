@@ -2,138 +2,52 @@ package main
 
 import (
 	"archive/tar"
-	"compress/gzip"
-	"flag"
-	"fmt"
-	"io"
-	"net/http"
-	"os"
-	"path/filepath"
-	"sort"
-	"strings"
-	"syscall"
 
-	"gopkg.in/yaml.v3"
-)
+	package main
 
-// Config represents the structure of apkg.yaml
-type Config struct {
-	Repos       []string `yaml:"repos"`
-	Packages    []string `yaml:"packages"`
-	Install     bool     `yaml:"install"`
-	InstallDir  string   `yaml:"install_dir"`
-	RunScripts  bool     `yaml:"run_scripts"`
-	ResolveDeps bool     `yaml:"resolve_deps"`
-}
+	import (
+		"archive/tar"
+		"compress/gzip"
+		"flag"
+		"fmt"
+		"io"
+		"net/http"
+		"os"
+		"path/filepath"
+		"sort"
+		"strings"
+		"syscall"
+		"gopkg.in/yaml.v3"
+	)
 
-// readConfig reads and parses apkg.yaml
-func readConfig(path string) (*Config, error) {
-	f, err := os.Open(path)
+	type Config struct {
+		Repos       []string `yaml:"repos"`
+		Packages    []string `yaml:"packages"`
+		Install     bool     `yaml:"install"`
+		InstallDir  string   `yaml:"install_dir"`
+		RunScripts  bool     `yaml:"run_scripts"`
+		ResolveDeps bool     `yaml:"resolve_deps"`
+	}
+
+	type APKPackage struct {
+		Name     string
+		Version  string
+		Filename string
+		Deps     []string
+	}
+
+	// InstalledPkg represents a record of an installed package and its version
+	// Used for tracking and upgrade logic
+	type InstalledPkg struct {
+		Name    string `yaml:"name"`
+		Version string `yaml:"version"`
+	}
+
+	// ...existing code for all other functions and main()...
 	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	var cfg Config
-	dec := yaml.NewDecoder(f)
-	if err := dec.Decode(&cfg); err != nil {
-		return nil, err
-	}
-	return &cfg, nil
-}
-
-// fetchAPKIndex downloads and parses the APKINDEX.tar.gz from a given Alpine repo URL
-type APKPackage struct {
-	Name     string
-	Version  string
-	Filename string
-	Deps     []string
-}
-
-// fetchAndParseAPKIndex downloads and parses the APKINDEX.tar.gz from a given Alpine repo URL
-// fetchAndParseAPKIndex fetches APKINDEX from the exact repo URL provided
-func fetchAndParseAPKIndex(repoURL string) (map[string]APKPackage, error) {
-	repoURL = strings.TrimRight(repoURL, "/")
-	indexURL := repoURL + "/APKINDEX.tar.gz"
-	resp, err := http.Get(indexURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to download APKINDEX: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to fetch APKINDEX: status %d, content-type %s, body: %s", resp.StatusCode, resp.Header.Get("Content-Type"), string(body))
-	}
-
-	ct := resp.Header.Get("Content-Type")
-	if !(strings.Contains(ct, "gzip") || strings.Contains(ct, "octet-stream")) {
-		return nil, fmt.Errorf("unexpected content-type for APKINDEX: %s", ct)
-	}
-
-	gzr, err := gzip.NewReader(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create gzip reader: %w", err)
-	}
-	defer gzr.Close()
-
-	tarReader := tar.NewReader(gzr)
-	for {
-		hdr, err := tarReader.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("tar read error: %w", err)
-		}
-		if hdr.Typeflag == tar.TypeReg && hdr.Name == "APKINDEX" {
-			return parseAPKIndex(tarReader)
-		}
-	}
-	return nil, fmt.Errorf("APKINDEX not found in archive")
-}
-
-// parseAPKIndex parses the APKINDEX file and returns a map of package name to APKPackage
-func parseAPKIndex(r io.Reader) (map[string]APKPackage, error) {
-	// Read the entire APKINDEX into memory
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return nil, err
-	}
-	content := string(data)
-
-	entries := strings.Split(content, "\n\n")
-	pkgs := make(map[string]APKPackage)
-	for _, entry := range entries {
-		var name, version, depsLine string
-		for _, line := range strings.Split(entry, "\n") {
-			if len(line) < 2 || line[1] != ':' {
-				continue
-			}
-			val := line[2:]
-			switch line[0] {
-			case 'P':
-				name = val
-			case 'V':
-				version = val
-			case 'D':
-				depsLine = val
-			}
-		}
-		if name != "" && version != "" {
-			filename := name + "-" + version + ".apk"
-			var deps []string
-			if depsLine != "" {
-				for _, dep := range strings.Fields(depsLine) {
-					// Remove version constraints (e.g., 'libc.musl-x86_64.so.1 so:libc.musl-x86_64.so.1')
-					deps = append(deps, strings.Split(dep, ">=")[0])
-				}
-			}
-			pkgs[name] = APKPackage{Name: name, Version: version, Filename: filename, Deps: deps}
-		}
-	}
-	return pkgs, nil
-}
+		if os.IsNotExist(err) {
+			os.MkdirAll("/etc/apkg", 0755)
+// ...existing code...
 
 // InstalledPkg represents a record of an installed package and its version
 // Used for tracking and upgrade logic
@@ -160,6 +74,27 @@ func readInstalledPkgs(path string) (map[string]string, error) {
 	}
 	for _, p := range list {
 		pkgs[p.Name] = p.Version
+			f2, err2 := os.Create("/etc/apkg/apkg.yaml")
+			if err2 == nil {
+				f2.WriteString(defConfigText)
+				f2.Close()
+			}
+			f, err = os.Open("/etc/apkg/apkg.yaml")
+			path = "/etc/apkg/apkg.yaml"
+		} else {
+			return nil, err
+		}
+	}
+	defer f.Close()
+	var cfg Config
+	dec := yaml.NewDecoder(f)
+	if err := dec.Decode(&cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+// ...existing code for all other functions and main()...
 	}
 	return pkgs, nil
 }
@@ -191,7 +126,17 @@ func main() {
 	flag.Parse()
 
 	args := flag.Args()
-	if len(args) > 0 && (args[0] == "add" || args[0] == "remove" || args[0] == "reinstall" || args[0] == "regen-indexes" || args[0] == "list-installed" || args[0] == "help" || args[0] == "--help" || args[0] == "-h") {
+	validCmd := map[string]bool{
+		"add": true, "remove": true, "reinstall": true, "regen-indexes": true, "list-installed": true, "help": true, "--help": true, "-h": true,
+	}
+	if len(args) > 0 {
+		if !validCmd[args[0]] {
+			// Unknown command: show help and exit
+			fmt.Println(`apkg - worse Alpine package manager
+
+// ...existing code...
+	}
+	if len(args) > 0 && validCmd[args[0]] {
 		if args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 			fmt.Println(`apkg - worse Alpine package manager
 
@@ -366,20 +311,11 @@ Flags:
 			changed = true // always reinstall
 		}
 		if changed {
-			f, err := os.Create(*configPath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "[FATAL] Failed to write config: %v\n", err)
-				os.Exit(1)
-			}
-			defer f.Close()
-			enc := yaml.NewEncoder(f)
-			if err := enc.Encode(cfg); err != nil {
-				fmt.Fprintf(os.Stderr, "[FATAL] Failed to encode config: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Println("Config updated. Applying changes...")
-			// Re-run main logic to apply install/uninstall, but drop subcommand args
-			newArgs := []string{os.Args[0]}
+			       f, err := os.Open(path)
+			       if err != nil {
+				       if os.IsNotExist(err) {
+					       os.MkdirAll("/etc/apkg", 0755)
+					       defConfigText := `# apkg.yaml - default config generated by apkg
 			for _, a := range os.Args[1:] {
 				if a == "add" || a == "remove" || a == "reinstall" || a == "regen-indexes" {
 					break
@@ -406,6 +342,24 @@ Flags:
 		fmt.Println("Packages to install:", cfg.Packages)
 	}
 
+					       f2, err2 := os.Create("/etc/apkg/apkg.yaml")
+					       if err2 == nil {
+						       f2.WriteString(defConfigText)
+						       f2.Close()
+					       }
+					       f, err = os.Open("/etc/apkg/apkg.yaml")
+					       path = "/etc/apkg/apkg.yaml"
+				       } else {
+					       return nil, err
+				       }
+			       }
+			       defer f.Close()
+			       var cfg Config
+			       dec := yaml.NewDecoder(f)
+			       if err := dec.Decode(&cfg); err != nil {
+				       return nil, err
+			       }
+			       return &cfg, nil
 	// 1. Fetch and parse APKINDEX from all repos
 	fmt.Println("Fetching APKINDEX from all repos...")
 	pkgMap, sourceRepo, err := fetchAndParseAllAPKIndexes(cfg.Repos)
@@ -414,12 +368,18 @@ Flags:
 		os.Exit(2)
 	}
 
-	installedPkgsPath := "installed.yaml"
-	installedPkgs, _ := readInstalledPkgs(installedPkgsPath)
-	updatedPkgs := make(map[string]string)
-	for k, v := range installedPkgs {
-		updatedPkgs[k] = v
-	}
+       stateDir := "/etc/apkg"
+       installedPkgsPath := filepath.Join(stateDir, "installed.yaml")
+       installedFilesDir := filepath.Join(stateDir, "installed_files")
+       stagedDir := filepath.Join(stateDir, "staged")
+       staging2Dir := filepath.Join(stateDir, "staging-2")
+       os.MkdirAll(stateDir, 0755)
+       os.MkdirAll(installedFilesDir, 0755)
+       installedPkgs, _ := readInstalledPkgs(installedPkgsPath)
+       updatedPkgs := make(map[string]string)
+       for k, v := range installedPkgs {
+	       updatedPkgs[k] = v
+       }
 
 	// Dependency resolution
 	installSet := map[string]struct{}{}
@@ -477,40 +437,40 @@ Flags:
 		fmt.Println("[DRY-RUN] No changes made.")
 		return
 	}
-	if err := os.MkdirAll("staged", 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "[FATAL] Failed to create staged dir: %v\n", err)
-		os.Exit(3)
-	}
-	if err := os.MkdirAll("staging-2", 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "[FATAL] Failed to create staging-2 dir: %v\n", err)
-		os.Exit(3)
-	}
-	for _, pkg := range toInstall {
-		info, ok := pkgMap[pkg]
-		if !ok {
-			continue
-		}
-		repo, ok := sourceRepo[pkg]
-		if !ok {
-			fmt.Fprintf(os.Stderr, "[ERROR] No repo found for %s\n", pkg)
-			continue
-		}
-		apkURL := strings.TrimRight(repo, "/") + "/" + info.Filename
-		stagedPath := "staged/" + info.Filename
-		fmt.Printf("Downloading %s (%s) from %s\n", info.Name, info.Version, apkURL)
-		if err := downloadFile(apkURL, stagedPath); err != nil {
-			fmt.Fprintf(os.Stderr, "[ERROR] Failed to download %s: %v\n", info.Name, err)
-			continue
-		}
-		fmt.Printf("Staged: %s\n", stagedPath)
+       if err := os.MkdirAll(stagedDir, 0755); err != nil {
+	       fmt.Fprintf(os.Stderr, "[FATAL] Failed to create staged dir: %v\n", err)
+	       os.Exit(3)
+       }
+       if err := os.MkdirAll(staging2Dir, 0755); err != nil {
+	       fmt.Fprintf(os.Stderr, "[FATAL] Failed to create staging-2 dir: %v\n", err)
+	       os.Exit(3)
+       }
+       for _, pkg := range toInstall {
+	       info, ok := pkgMap[pkg]
+	       if !ok {
+		       continue
+	       }
+	       repo, ok := sourceRepo[pkg]
+	       if !ok {
+		       fmt.Fprintf(os.Stderr, "[ERROR] No repo found for %s\n", pkg)
+		       continue
+	       }
+	       apkURL := strings.TrimRight(repo, "/") + "/" + info.Filename
+	       stagedPath := filepath.Join(stagedDir, info.Filename)
+	       fmt.Printf("Downloading %s (%s) from %s\n", info.Name, info.Version, apkURL)
+	       if err := downloadFile(apkURL, stagedPath); err != nil {
+		       fmt.Fprintf(os.Stderr, "[ERROR] Failed to download %s: %v\n", info.Name, err)
+		       continue
+	       }
+	       fmt.Printf("Staged: %s\n", stagedPath)
 
-		// Extract .apk (tar.gz) into staging-2
-		if err := extractApk(stagedPath, "staging-2/"+pkg); err != nil {
-			fmt.Fprintf(os.Stderr, "[ERROR] Failed to extract %s: %v\n", info.Name, err)
-			continue
-		}
-		fmt.Printf("Extracted %s to staging-2/%s\n", info.Filename, pkg)
-	}
+	       // Extract .apk (tar.gz) into staging-2
+	       if err := extractApk(stagedPath, filepath.Join(staging2Dir, pkg)); err != nil {
+		       fmt.Fprintf(os.Stderr, "[ERROR] Failed to extract %s: %v\n", info.Name, err)
+		       continue
+	       }
+	       fmt.Printf("Extracted %s to %s\n", info.Filename, filepath.Join(staging2Dir, pkg))
+       }
 
 	if cfg.Install {
 		if err := installPackages(toInstall, "staging-2", cfg.InstallDir); err != nil {
