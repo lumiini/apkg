@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -139,6 +140,7 @@ func main() {
 
 	// 2. For each package, find in APKINDEX, download .apk from same dir, and stage
 	os.MkdirAll("staged", 0755)
+	os.MkdirAll("staging-2", 0755)
 	for _, pkg := range cfg.Packages {
 		info, ok := pkgMap[pkg]
 		if !ok {
@@ -146,13 +148,67 @@ func main() {
 			continue
 		}
 		apkURL := strings.TrimRight(cfg.Repo, "/") + "/" + info.Filename
+		stagedPath := "staged/" + info.Filename
 		fmt.Printf("Downloading %s (%s) from %s\n", info.Name, info.Version, apkURL)
-		if err := downloadFile(apkURL, "staged/"+info.Filename); err != nil {
+		if err := downloadFile(apkURL, stagedPath); err != nil {
 			fmt.Printf("Failed to download %s: %v\n", info.Name, err)
 			continue
 		}
-		fmt.Printf("Staged: staged/%s\n", info.Filename)
+		fmt.Printf("Staged: %s\n", stagedPath)
+
+		// Extract .apk (tar.gz) into staging-2
+		if err := extractApk(stagedPath, "staging-2"); err != nil {
+			fmt.Printf("Failed to extract %s: %v\n", info.Name, err)
+			continue
+		}
+		fmt.Printf("Extracted %s to staging-2/\n", info.Filename)
 	}
+// extractApk extracts a .apk (tar.gz) file to the given directory
+func extractApk(apkPath, destDir string) error {
+	f, err := os.Open(apkPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(destDir, hdr.Name)
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0755); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return err
+			}
+			out, err := os.Create(target)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(out, tr); err != nil {
+				out.Close()
+				return err
+			}
+			out.Close()
+		}
+	}
+	return nil
+}
 }
 
 // downloadFile downloads a file from url and saves it to dest
