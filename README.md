@@ -1,8 +1,7 @@
 # apkg
 
-[![Go](https://img.shields.io/badge/go-≥1.21-blue?logo=go)](https://go.dev/)  
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)  
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen)](#)  
+[![Go](https://img.shields.io/badge/go-≥1.21-blue?logo=go)](https://go.dev/) [![License: MPL-2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
+ [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)](#)
 
 A *nicely-ish vibecoded* package manager that uses **apk** repos.  
 
