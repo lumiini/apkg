@@ -7,17 +7,18 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strings"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 // Config represents the structure of apkg.yaml
 type Config struct {
-	Repo     string   `yaml:"repo"`
-	Packages []string `yaml:"packages"`
-}
+	Repo      string   `yaml:"repo"`
+	Packages  []string `yaml:"packages"`
+	Install   bool     `yaml:"install"`
+	InstallDir string  `yaml:"install_dir"`
 
 // readConfig reads and parses apkg.yaml
 func readConfig(path string) (*Config, error) {
@@ -163,6 +164,24 @@ func main() {
 		}
 		fmt.Printf("Extracted %s to staging-2/\n", info.Filename)
 	}
+
+	// Optionally perform install logic if enabled in config
+	if cfg.Install {
+		installDir := cfg.InstallDir
+		if installDir == "" {
+			installDir = "apkg-install-root"
+		}
+		fmt.Printf("Install logic enabled: installing packages to %s...\n", installDir)
+		if err := installPackages("staging-2", cfg.Packages, installDir); err != nil {
+			fmt.Printf("Install failed: %v\n", err)
+		} else {
+			fmt.Println("Install completed.")
+		}
+	} else {
+		fmt.Println("Install logic is disabled in config.")
+	}
+}
+
 // extractApk extracts a .apk (tar.gz) file to the given directory
 func extractApk(apkPath, destDir string) error {
 	f, err := os.Open(apkPath)
@@ -178,6 +197,9 @@ func extractApk(apkPath, destDir string) error {
 	defer gz.Close()
 
 	tr := tar.NewReader(gz)
+	skipNames := []string{
+		".PKGINFO", ".post-install", ".post-upgrade", ".pre-deinstall", ".trigger",
+	}
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -186,7 +208,22 @@ func extractApk(apkPath, destDir string) error {
 		if err != nil {
 			return err
 		}
-		target := filepath.Join(destDir, hdr.Name)
+		name := hdr.Name
+		// Skip unwanted files
+		skip := false
+		for _, s := range skipNames {
+			if name == s || strings.HasPrefix(name, s+"/") {
+				skip = true
+				break
+			}
+		}
+		if strings.HasPrefix(name, ".SIGN.RSA-") {
+			skip = true
+		}
+		if skip {
+			continue
+		}
+		target := filepath.Join(destDir, name)
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(target, 0755); err != nil {
@@ -207,6 +244,14 @@ func extractApk(apkPath, destDir string) error {
 			out.Close()
 		}
 	}
+	return nil
+}
+
+// installPackages is the actual install logic (currently a stub)
+func installPackages(stagingDir string, pkgs []string, installDir string) error {
+	// TODO: Implement actual install logic (copy files, set permissions, run scripts, etc.)
+	// This is intentionally left as a stub for now.
+	fmt.Println("(stub) Would install from:", stagingDir, "for packages:", pkgs, "to", installDir)
 	return nil
 }
 }
