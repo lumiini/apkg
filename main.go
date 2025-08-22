@@ -18,11 +18,12 @@ import (
 
 // Config represents the structure of apkg.yaml
 type Config struct {
-	Repo       string   `yaml:"repo"`
-	Packages   []string `yaml:"packages"`
-	Install    bool     `yaml:"install"`
-	InstallDir string   `yaml:"install_dir"`
-	RunScripts bool     `yaml:"run_scripts"`
+	Repo        string   `yaml:"repo"`
+	Packages    []string `yaml:"packages"`
+	Install     bool     `yaml:"install"`
+	InstallDir  string   `yaml:"install_dir"`
+	RunScripts  bool     `yaml:"run_scripts"`
+	ResolveDeps bool     `yaml:"resolve_deps"`
 }
 
 // readConfig reads and parses apkg.yaml
@@ -46,6 +47,7 @@ type APKPackage struct {
 	Name     string
 	Version  string
 	Filename string
+	Deps     []string
 }
 
 // fetchAndParseAPKIndex downloads and parses the APKINDEX.tar.gz from a given Alpine repo URL
@@ -103,7 +105,7 @@ func parseAPKIndex(r io.Reader) (map[string]APKPackage, error) {
 	entries := strings.Split(content, "\n\n")
 	pkgs := make(map[string]APKPackage)
 	for _, entry := range entries {
-		var name, version string
+		var name, version, depsLine string
 		for _, line := range strings.Split(entry, "\n") {
 			if len(line) < 2 || line[1] != ':' {
 				continue
@@ -114,14 +116,20 @@ func parseAPKIndex(r io.Reader) (map[string]APKPackage, error) {
 				name = val
 			case 'V':
 				version = val
-				// case 'A':
-				//     arch = val
+			case 'D':
+				depsLine = val
 			}
 		}
 		if name != "" && version != "" {
-			// Construct filename as in apk-tools: ${name}-${version}.apk
 			filename := name + "-" + version + ".apk"
-			pkgs[name] = APKPackage{Name: name, Version: version, Filename: filename}
+			var deps []string
+			if depsLine != "" {
+				for _, dep := range strings.Fields(depsLine) {
+					// Remove version constraints (e.g., 'libc.musl-x86_64.so.1 so:libc.musl-x86_64.so.1')
+					deps = append(deps, strings.Split(dep, ">=")[0])
+				}
+			}
+			pkgs[name] = APKPackage{Name: name, Version: version, Filename: filename, Deps: deps}
 		}
 	}
 	return pkgs, nil
@@ -399,8 +407,35 @@ Flags:
 	for k, v := range installedPkgs {
 		updatedPkgs[k] = v
 	}
-	toInstall := []string{}
+
+	// Dependency resolution
+	installSet := map[string]struct{}{}
+	var resolveDeps bool = cfg.ResolveDeps
+	var addWithDeps func(string)
+	addWithDeps = func(pkg string) {
+		if _, ok := installSet[pkg]; ok {
+			return
+		}
+		installSet[pkg] = struct{}{}
+		if resolveDeps {
+			info, ok := pkgMap[pkg]
+			if ok {
+				for _, dep := range info.Deps {
+					if dep != "" && dep != pkg {
+						addWithDeps(dep)
+					}
+				}
+			}
+		}
+	}
 	for _, pkg := range cfg.Packages {
+		addWithDeps(pkg)
+	}
+	toInstall := []string{}
+	for pkg := range installSet {
+		toInstall = append(toInstall, pkg)
+	}
+	for _, pkg := range toInstall {
 		info, ok := pkgMap[pkg]
 		if !ok {
 			continue
@@ -416,7 +451,6 @@ Flags:
 		} else {
 			fmt.Printf("%s (%s) will be installed.\n", pkg, info.Version)
 		}
-		toInstall = append(toInstall, pkg)
 		updatedPkgs[pkg] = info.Version
 	}
 

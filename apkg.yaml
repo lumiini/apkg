@@ -1,5 +1,7 @@
 repo: https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64
-packages: []
+packages:
+    - apk-tools
 install: true
 install_dir: test-root
 run_scripts: false
+resolve_deps: false
