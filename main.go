@@ -203,6 +203,9 @@ func extractApk(apkPath, destDir string) error {
 		if strings.HasPrefix(name, ".SIGN.RSA-") {
 			skip = true
 		}
+		if strings.HasSuffix(name, ".pub") {
+			skip = true
+		}
 		if skip {
 			continue
 		}
@@ -228,12 +231,13 @@ func extractApk(apkPath, destDir string) error {
 		}
 	}
 	return nil
-// installPackages is the actual install logic (currently disabled)
-// func installPackages(stagingDir string, pkgs []string) error {
-//     // TODO: Implement actual install logic (copy files, set permissions, run scripts, etc.)
-//     // This is intentionally left disabled for now.
-//     return nil
-// }
+	// installPackages is the actual install logic (currently disabled)
+	//
+	//	func installPackages(stagingDir string, pkgs []string) error {
+	//	    // TODO: Implement actual install logic (copy files, set permissions, run scripts, etc.)
+	//	    // This is intentionally left disabled for now.
+	//	    return nil
+	//	}
 }
 
 // downloadFile downloads a file from url and saves it to dest
