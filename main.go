@@ -86,38 +86,35 @@ func fetchAndParseAPKIndex(repoURL string) (map[string]APKPackage, error) {
 
 // parseAPKIndex parses the APKINDEX file and returns a map of package name to APKPackage
 func parseAPKIndex(r io.Reader) (map[string]APKPackage, error) {
-	buf := make([]byte, 4096)
-	var content strings.Builder
-	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			content.Write(buf[:n])
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
+	// Read the entire APKINDEX into memory
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
 	}
+	content := string(data)
 
-	entries := strings.Split(content.String(), "\n\n")
+	entries := strings.Split(content, "\n\n")
 	pkgs := make(map[string]APKPackage)
 	for _, entry := range entries {
-		var pkg, ver, filename string
+		var name, version string
 		for _, line := range strings.Split(entry, "\n") {
-			if strings.HasPrefix(line, "P:") {
-				pkg = strings.TrimPrefix(line, "P:")
+			if len(line) < 2 || line[1] != ':' {
+				continue
 			}
-			if strings.HasPrefix(line, "V:") {
-				ver = strings.TrimPrefix(line, "V:")
-			}
-			if strings.HasPrefix(line, "F:") {
-				filename = strings.TrimPrefix(line, "F:")
+			val := line[2:]
+			switch line[0] {
+			case 'P':
+				name = val
+			case 'V':
+				version = val
+				// case 'A':
+				//     arch = val
 			}
 		}
-		if pkg != "" && ver != "" && filename != "" {
-			pkgs[pkg] = APKPackage{Name: pkg, Version: ver, Filename: filename}
+		if name != "" && version != "" {
+			// Construct filename as in apk-tools: ${name}-${version}.apk
+			filename := name + "-" + version + ".apk"
+			pkgs[name] = APKPackage{Name: name, Version: version, Filename: filename}
 		}
 	}
 	return pkgs, nil
