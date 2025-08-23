@@ -4,5 +4,5 @@ repos:
 packages: []
 install: true
 install_dir: test-root
-run_scripts: true
+run_scripts: false
 resolve_deps: false
