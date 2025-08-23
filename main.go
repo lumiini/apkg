@@ -235,6 +235,33 @@ Flags:
 			fmt.Fprintf(os.Stderr, "[FATAL] Failed to read config: %v\n", err)
 			os.Exit(1)
 		}
+		if *dryRun {
+			fmt.Println("[DRY-RUN] Subcommand execution skipped.")
+			switch args[0] {
+			case "add":
+				if len(args) < 2 {
+					fmt.Fprintf(os.Stderr, "Usage: %s [flags] add <package>\n", os.Args[0])
+					os.Exit(1)
+				}
+				fmt.Printf("[DRY-RUN] Would add package '%s' to config '%s'.\n", args[1], *configPath)
+			case "remove":
+				if len(args) < 2 {
+					fmt.Fprintf(os.Stderr, "Usage: %s [flags] remove <package>\n", os.Args[0])
+					os.Exit(1)
+				}
+				fmt.Printf("[DRY-RUN] Would remove package '%s' from config '%s'.\n", args[1], *configPath)
+			case "reinstall":
+				if len(args) < 2 {
+					fmt.Fprintf(os.Stderr, "Usage: %s [flags] reinstall <package>\n", os.Args[0])
+					os.Exit(1)
+				}
+				fmt.Printf("[DRY-RUN] Would reinstall package '%s'.\n", args[1])
+			case "regen-indexes":
+				fmt.Println("[DRY-RUN] Would regenerate all file indexes.")
+			}
+			fmt.Println("[DRY-RUN] No changes made.")
+			os.Exit(0)
+		}
 		if args[0] == "regen-indexes" {
 			installedPkgs, _ := readInstalledPkgs("installed.yaml")
 			cfgPkgs := make(map[string]bool)
@@ -475,10 +502,41 @@ Flags:
 
 	// Only download and extract packages that need install/upgrade
 	if *dryRun {
-		fmt.Println("[DRY-RUN] The following packages would be downloaded and installed:")
+		fmt.Println("[DRY-RUN] The following changes would be made:")
+		// Packages to install/upgrade
+		installationsFound := false
 		for _, pkg := range toInstall {
-			info := pkgMap[pkg]
-			fmt.Printf("  %s (%s)\n", pkg, info.Version)
+			info, ok := pkgMap[pkg]
+			if !ok {
+				continue
+			}
+			curVer, already := installedPkgs[pkg]
+			if already {
+				if curVer != info.Version {
+					fmt.Printf("  - Upgrade %s from %s to %s\n", pkg, curVer, info.Version)
+					installationsFound = true
+				}
+			} else {
+				fmt.Printf("  - Install %s (%s)\n", pkg, info.Version)
+				installationsFound = true
+			}
+		}
+
+		// Packages to uninstall
+		uninstallsFound := false
+		configPkgs := map[string]struct{}{}
+		for _, p := range cfg.Packages {
+			configPkgs[p] = struct{}{}
+		}
+		for pkg, ver := range installedPkgs {
+			if _, found := configPkgs[pkg]; !found {
+				fmt.Printf("  - Uninstall %s (%s)\n", pkg, ver)
+				uninstallsFound = true
+			}
+		}
+
+		if !installationsFound && !uninstallsFound {
+			fmt.Println("System is already up to date with the configuration.")
 		}
 		fmt.Println("[DRY-RUN] No changes made.")
 		return
@@ -764,7 +822,9 @@ func uninstallPackage(pkgName, version, repo, installDir string) error {
 	dirs := map[string]struct{}{}
 	for _, rel := range files {
 		dir := filepath.Dir(filepath.Join(installDir, rel))
-		if dir != installDir {
+		// Only consider directories that are not the root install directory itself
+		// and not the current directory ('.') which can happen with relative paths.
+		if dir != installDir && dir != "." {
 			dirs[dir] = struct{}{}
 		}
 	}
